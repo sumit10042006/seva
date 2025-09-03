@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, serverTimestamp, query, where } from 'firebase/firestore';
+import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { Plus, Users, MapPin, Bell, User, Clock, AlertTriangle } from 'lucide-react';
+import { Plus, Users, MapPin, Bell, User, Clock, AlertTriangle, X, Edit, Trash2 } from 'lucide-react';
 import { Team, StaffMember, Task } from '../../types/admin';
 import { getCurrentUser } from '../../firebase/auth';
 
@@ -13,6 +13,7 @@ const TeamsPage: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [showTeamDetail, setShowTeamDetail] = useState(false);
+  const [editingTeam, setEditingTeam] = useState<Team | null>(null);
 
   const [newTeam, setNewTeam] = useState({
     name: '',
@@ -24,68 +25,72 @@ const TeamsPage: React.FC = () => {
   });
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    // Real-time listeners
+    const teamsQuery = query(collection(db, 'teams'), orderBy('createdAt', 'desc'));
+    const staffQuery = query(collection(db, 'staff'), orderBy('name'));
+    const tasksQuery = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      
-      // Fetch teams
-      const teamsSnapshot = await getDocs(collection(db, 'teams'));
-      const teamsData = teamsSnapshot.docs.map(doc => ({
+    const unsubscribeTeams = onSnapshot(teamsQuery, (snapshot) => {
+      const teamsData = snapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data()
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate?.() || new Date()
       })) as Team[];
-      
-      // Fetch staff
-      const staffSnapshot = await getDocs(collection(db, 'staff'));
-      const staffData = staffSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as StaffMember[];
-      
-      // Fetch tasks
-      const tasksSnapshot = await getDocs(collection(db, 'tasks'));
-      const tasksData = tasksSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Task[];
-      
       setTeams(teamsData);
+    });
+
+    const unsubscribeStaff = onSnapshot(staffQuery, (snapshot) => {
+      const staffData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        lastSeenAt: doc.data().lastSeenAt?.toDate?.() || new Date(),
+        createdAt: doc.data().createdAt?.toDate?.() || new Date()
+      })) as StaffMember[];
       setStaff(staffData);
+    });
+
+    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate?.() || new Date(),
+        dueAt: doc.data().dueAt?.toDate?.() || new Date()
+      })) as Task[];
       setTasks(tasksData);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
       setLoading(false);
-    }
-  };
+    });
+
+    return () => {
+      unsubscribeTeams();
+      unsubscribeStaff();
+      unsubscribeTasks();
+    };
+  }, []);
 
   const handleCreateTeam = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    if (!newTeam.name.trim()) {
+      alert('Team name is required');
+      return;
+    }
+
     try {
       const currentUser = getCurrentUser();
       
-      await addDoc(collection(db, 'teams'), {
+      const teamData = {
         ...newTeam,
+        name: newTeam.name.trim(),
         memberIds: [],
         createdAt: serverTimestamp(),
+        createdBy: currentUser?.uid || 'unknown',
         isActive: true
-      });
+      };
+
+      await addDoc(collection(db, 'teams'), teamData);
       
       setShowCreateModal(false);
-      setNewTeam({
-        name: '',
-        description: '',
-        leaderId: '',
-        zoneIds: [],
-        defaultShift: 'red',
-        capacity: 10
-      });
-      
-      fetchData();
+      resetForm();
       alert('Team created successfully!');
     } catch (error) {
       console.error('Error creating team:', error);
@@ -93,19 +98,68 @@ const TeamsPage: React.FC = () => {
     }
   };
 
+  const handleUpdateTeam = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!editingTeam?.id) return;
+
+    try {
+      await updateDoc(doc(db, 'teams', editingTeam.id), {
+        ...newTeam,
+        name: newTeam.name.trim(),
+        updatedAt: serverTimestamp()
+      });
+      
+      setShowCreateModal(false);
+      setEditingTeam(null);
+      resetForm();
+      alert('Team updated successfully!');
+    } catch (error) {
+      console.error('Error updating team:', error);
+      alert('Failed to update team');
+    }
+  };
+
+  const handleDeleteTeam = async (team: Team) => {
+    if (!team.id) return;
+    
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${team.name}"? This action cannot be undone.`
+    );
+    
+    if (confirmed) {
+      try {
+        await updateDoc(doc(db, 'teams', team.id), {
+          isActive: false,
+          deletedAt: serverTimestamp()
+        });
+        alert('Team deleted successfully!');
+      } catch (error) {
+        console.error('Error deleting team:', error);
+        alert('Failed to delete team');
+      }
+    }
+  };
+
   const handleNotifyTeam = async (team: Team) => {
     const message = prompt(`Send notification to ${team.name} team:`);
-    if (message) {
+    if (message && message.trim()) {
       try {
-        const teamMembers = staff.filter(s => team.memberIds.includes(s.id!));
-        const phoneNumbers = teamMembers.map(s => s.mobile);
+        const teamMembers = staff.filter(s => team.memberIds.includes(s.id!) && s.isActive);
+        const phoneNumbers = teamMembers.map(s => s.mobile).filter(Boolean);
         
+        if (phoneNumbers.length === 0) {
+          alert('No active team members found to notify');
+          return;
+        }
+
         await addDoc(collection(db, 'notifications'), {
           to: phoneNumbers,
           channel: 'sms',
-          message: `[${team.name}] ${message}`,
+          message: `[${team.name}] ${message.trim()}`,
           status: 'pending',
-          createdAt: serverTimestamp()
+          createdAt: serverTimestamp(),
+          teamId: team.id
         });
         
         alert(`Notification sent to ${phoneNumbers.length} team members`);
@@ -116,8 +170,86 @@ const TeamsPage: React.FC = () => {
     }
   };
 
+  const handleAddMemberToTeam = async (teamId: string, staffId: string) => {
+    try {
+      const team = teams.find(t => t.id === teamId);
+      if (!team) return;
+
+      const updatedMemberIds = [...team.memberIds, staffId];
+      
+      await updateDoc(doc(db, 'teams', teamId), {
+        memberIds: updatedMemberIds,
+        updatedAt: serverTimestamp()
+      });
+
+      // Update staff member's team assignment
+      await updateDoc(doc(db, 'staff', staffId), {
+        teamIds: [teamId], // For simplicity, assign to one team
+        updatedAt: serverTimestamp()
+      });
+
+      alert('Staff member added to team successfully!');
+    } catch (error) {
+      console.error('Error adding member to team:', error);
+      alert('Failed to add member to team');
+    }
+  };
+
+  const handleRemoveMemberFromTeam = async (teamId: string, staffId: string) => {
+    try {
+      const team = teams.find(t => t.id === teamId);
+      if (!team) return;
+
+      const updatedMemberIds = team.memberIds.filter(id => id !== staffId);
+      
+      await updateDoc(doc(db, 'teams', teamId), {
+        memberIds: updatedMemberIds,
+        updatedAt: serverTimestamp()
+      });
+
+      // Update staff member's team assignment
+      const staffMember = staff.find(s => s.id === staffId);
+      if (staffMember) {
+        const updatedTeamIds = staffMember.teamIds.filter(id => id !== teamId);
+        await updateDoc(doc(db, 'staff', staffId), {
+          teamIds: updatedTeamIds,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      alert('Staff member removed from team successfully!');
+    } catch (error) {
+      console.error('Error removing member from team:', error);
+      alert('Failed to remove member from team');
+    }
+  };
+
+  const resetForm = () => {
+    setNewTeam({
+      name: '',
+      description: '',
+      leaderId: '',
+      zoneIds: [],
+      defaultShift: 'red',
+      capacity: 10
+    });
+  };
+
+  const openEditModal = (team: Team) => {
+    setEditingTeam(team);
+    setNewTeam({
+      name: team.name,
+      description: team.description || '',
+      leaderId: team.leaderId || '',
+      zoneIds: team.zoneIds || [],
+      defaultShift: team.defaultShift,
+      capacity: team.capacity
+    });
+    setShowCreateModal(true);
+  };
+
   const getTeamStats = (team: Team) => {
-    const teamMembers = staff.filter(s => team.memberIds.includes(s.id!));
+    const teamMembers = staff.filter(s => team.memberIds.includes(s.id!) && s.isActive);
     const activeTasks = tasks.filter(t => 
       t.assignedTo.type === 'team' && 
       t.assignedTo.id === team.id &&
@@ -126,7 +258,7 @@ const TeamsPage: React.FC = () => {
     
     return {
       totalMembers: teamMembers.length,
-      activeMembers: teamMembers.filter(s => s.isActive && s.onDuty).length,
+      activeMembers: teamMembers.filter(s => s.onDuty).length,
       activeTasks: activeTasks.length,
       coverage: Math.round((teamMembers.length / team.capacity) * 100)
     };
@@ -136,6 +268,13 @@ const TeamsPage: React.FC = () => {
     if (coverage >= 80) return 'text-green-600';
     if (coverage >= 60) return 'text-yellow-600';
     return 'text-red-600';
+  };
+
+  const getUnassignedStaff = () => {
+    return staff.filter(s => 
+      s.isActive && 
+      !teams.some(team => team.memberIds.includes(s.id!))
+    );
   };
 
   if (loading) {
@@ -162,7 +301,11 @@ const TeamsPage: React.FC = () => {
           <p className="text-sm text-gray-600 mt-1">Organize and manage your workforce teams</p>
         </div>
         <button
-          onClick={() => setShowCreateModal(true)}
+          onClick={() => {
+            setEditingTeam(null);
+            resetForm();
+            setShowCreateModal(true);
+          }}
           className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -170,26 +313,75 @@ const TeamsPage: React.FC = () => {
         </button>
       </div>
 
+      {/* Summary Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <Users className="h-8 w-8 text-indigo-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Total Teams</p>
+              <p className="text-2xl font-semibold text-gray-900">{teams.filter(t => t.isActive).length}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <User className="h-8 w-8 text-green-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Assigned Staff</p>
+              <p className="text-2xl font-semibold text-gray-900">
+                {staff.filter(s => s.isActive && s.teamIds.length > 0).length}
+              </p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <AlertTriangle className="h-8 w-8 text-yellow-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Unassigned Staff</p>
+              <p className="text-2xl font-semibold text-gray-900">{getUnassignedStaff().length}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <Clock className="h-8 w-8 text-blue-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Active Tasks</p>
+              <p className="text-2xl font-semibold text-gray-900">
+                {tasks.filter(t => ['pending', 'in-progress'].includes(t.status)).length}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Teams Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {teams.map((team) => {
+        {teams.filter(t => t.isActive).map((team) => {
           const stats = getTeamStats(team);
           const leader = staff.find(s => s.id === team.leaderId);
           
           return (
-            <div key={team.id} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+            <div key={team.id} className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
               <div className="flex justify-between items-start mb-4">
-                <div>
+                <div className="flex-1">
                   <h3 className="text-lg font-semibold text-gray-900">{team.name}</h3>
-                  <p className="text-sm text-gray-600 mt-1">{team.description}</p>
+                  <p className="text-sm text-gray-600 mt-1 line-clamp-2">{team.description}</p>
                 </div>
-                <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                  team.defaultShift === 'red' ? 'bg-red-100 text-red-800' :
-                  team.defaultShift === 'orange' ? 'bg-orange-100 text-orange-800' :
-                  'bg-green-100 text-green-800'
-                }`}>
-                  {team.defaultShift.toUpperCase()}
-                </span>
+                <div className="flex items-center space-x-1 ml-2">
+                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                    team.defaultShift === 'red' ? 'bg-red-100 text-red-800' :
+                    team.defaultShift === 'orange' ? 'bg-orange-100 text-orange-800' :
+                    'bg-green-100 text-green-800'
+                  }`}>
+                    {team.defaultShift.toUpperCase()}
+                  </span>
+                </div>
               </div>
 
               {/* Team Leader */}
@@ -200,15 +392,31 @@ const TeamsPage: React.FC = () => {
                 </span>
               </div>
 
+              {/* Zones */}
+              <div className="flex items-center mb-4">
+                <MapPin className="h-4 w-4 text-gray-400 mr-2" />
+                <div className="flex flex-wrap gap-1">
+                  {team.zoneIds.map(zone => (
+                    <span key={zone} className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+                      {zone}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
               {/* Stats */}
-              <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-3 gap-4 mb-4">
                 <div className="text-center">
-                  <div className="text-lg font-semibold text-gray-900">{stats.activeMembers}/{stats.totalMembers}</div>
-                  <div className="text-xs text-gray-500">Active/Total</div>
+                  <div className="text-lg font-semibold text-gray-900">{stats.activeMembers}</div>
+                  <div className="text-xs text-gray-500">On Duty</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-semibold text-gray-900">{stats.totalMembers}</div>
+                  <div className="text-xs text-gray-500">Total</div>
                 </div>
                 <div className="text-center">
                   <div className="text-lg font-semibold text-gray-900">{stats.activeTasks}</div>
-                  <div className="text-xs text-gray-500">Active Tasks</div>
+                  <div className="text-xs text-gray-500">Tasks</div>
                 </div>
               </div>
 
@@ -222,7 +430,7 @@ const TeamsPage: React.FC = () => {
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2">
                   <div
-                    className={`h-2 rounded-full ${
+                    className={`h-2 rounded-full transition-all duration-300 ${
                       stats.coverage >= 80 ? 'bg-green-500' :
                       stats.coverage >= 60 ? 'bg-yellow-500' :
                       'bg-red-500'
@@ -239,16 +447,30 @@ const TeamsPage: React.FC = () => {
                     setSelectedTeam(team);
                     setShowTeamDetail(true);
                   }}
-                  className="flex-1 bg-gray-100 text-gray-700 py-2 px-3 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                  className="flex-1 bg-gray-100 text-gray-700 py-2 px-3 rounded-lg hover:bg-gray-200 text-sm font-medium transition-colors"
                 >
                   View Details
                 </button>
                 <button
+                  onClick={() => openEditModal(team)}
+                  className="bg-indigo-100 text-indigo-700 p-2 rounded-lg hover:bg-indigo-200 transition-colors"
+                  title="Edit Team"
+                >
+                  <Edit className="h-4 w-4" />
+                </button>
+                <button
                   onClick={() => handleNotifyTeam(team)}
-                  className="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-700"
+                  className="bg-blue-100 text-blue-700 p-2 rounded-lg hover:bg-blue-200 transition-colors"
                   title="Notify Team"
                 >
                   <Bell className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => handleDeleteTeam(team)}
+                  className="bg-red-100 text-red-700 p-2 rounded-lg hover:bg-red-200 transition-colors"
+                  title="Delete Team"
+                >
+                  <Trash2 className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -256,21 +478,27 @@ const TeamsPage: React.FC = () => {
         })}
       </div>
 
-      {/* Create Team Modal */}
+      {/* Create/Edit Team Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl w-full max-w-2xl">
+          <div className="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-gray-900">Create New Team</h2>
+              <h2 className="text-xl font-bold text-gray-900">
+                {editingTeam ? 'Edit Team' : 'Create New Team'}
+              </h2>
               <button
-                onClick={() => setShowCreateModal(false)}
+                onClick={() => {
+                  setShowCreateModal(false);
+                  setEditingTeam(null);
+                  resetForm();
+                }}
                 className="text-gray-500 hover:text-gray-700"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateTeam} className="p-6 space-y-6">
+            <form onSubmit={editingTeam ? handleUpdateTeam : handleCreateTeam} className="p-6 space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Team Name <span className="text-red-500">*</span>
@@ -309,7 +537,7 @@ const TeamsPage: React.FC = () => {
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   >
                     <option value="">Select Leader</option>
-                    {staff.filter(s => s.isActive && ['manager', 'supervisor'].includes(s.role)).map(s => (
+                    {staff.filter(s => s.isActive && ['manager', 'supervisor', 'admin'].includes(s.role)).map(s => (
                       <option key={s.id} value={s.id}>{s.name} ({s.role})</option>
                     ))}
                   </select>
@@ -338,7 +566,7 @@ const TeamsPage: React.FC = () => {
                 <input
                   type="number"
                   value={newTeam.capacity}
-                  onChange={(e) => setNewTeam({ ...newTeam, capacity: parseInt(e.target.value) })}
+                  onChange={(e) => setNewTeam({ ...newTeam, capacity: parseInt(e.target.value) || 10 })}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   min="1"
                   max="100"
@@ -347,7 +575,7 @@ const TeamsPage: React.FC = () => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Zones
+                  Assigned Zones
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   {['North', 'South', 'East', 'West', 'Central'].map((zone) => (
@@ -375,7 +603,11 @@ const TeamsPage: React.FC = () => {
               <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200">
                 <button
                   type="button"
-                  onClick={() => setShowCreateModal(false)}
+                  onClick={() => {
+                    setShowCreateModal(false);
+                    setEditingTeam(null);
+                    resetForm();
+                  }}
                   className="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
                 >
                   Cancel
@@ -385,7 +617,7 @@ const TeamsPage: React.FC = () => {
                   className="flex items-center space-x-2 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>Create Team</span>
+                  <span>{editingTeam ? 'Update Team' : 'Create Team'}</span>
                 </button>
               </div>
             </form>
@@ -396,7 +628,7 @@ const TeamsPage: React.FC = () => {
       {/* Team Detail Modal */}
       {showTeamDetail && selectedTeam && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-xl w-full max-w-6xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex justify-between items-center">
               <h2 className="text-xl font-bold text-gray-900">{selectedTeam.name}</h2>
               <button
@@ -411,9 +643,35 @@ const TeamsPage: React.FC = () => {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Team Roster */}
                 <div>
-                  <h3 className="text-lg font-medium text-gray-900 mb-4">Team Roster</h3>
-                  <div className="space-y-3">
-                    {staff.filter(s => selectedTeam.memberIds.includes(s.id!)).map((member) => (
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-medium text-gray-900">Team Roster ({selectedTeam.memberIds.length})</h3>
+                    <button
+                      onClick={() => {
+                        const availableStaff = getUnassignedStaff();
+                        if (availableStaff.length === 0) {
+                          alert('No unassigned staff available');
+                          return;
+                        }
+                        
+                        const staffId = prompt(
+                          `Available staff:\n${availableStaff.map((s, i) => `${i + 1}. ${s.name} (${s.role})`).join('\n')}\n\nEnter staff number to add:`
+                        );
+                        
+                        if (staffId) {
+                          const index = parseInt(staffId) - 1;
+                          if (index >= 0 && index < availableStaff.length) {
+                            handleAddMemberToTeam(selectedTeam.id!, availableStaff[index].id!);
+                          }
+                        }
+                      }}
+                      className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
+                    >
+                      + Add Member
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
+                    {staff.filter(s => selectedTeam.memberIds.includes(s.id!) && s.isActive).map((member) => (
                       <div key={member.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                         <div className="flex items-center">
                           <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">
@@ -421,7 +679,7 @@ const TeamsPage: React.FC = () => {
                           </div>
                           <div className="ml-3">
                             <div className="text-sm font-medium text-gray-900">{member.name}</div>
-                            <div className="text-xs text-gray-500">{member.role}</div>
+                            <div className="text-xs text-gray-500">{member.role} • {member.mobile}</div>
                           </div>
                         </div>
                         <div className="flex items-center space-x-2">
@@ -430,6 +688,13 @@ const TeamsPage: React.FC = () => {
                           }`}>
                             {member.onDuty ? 'On Duty' : 'Off Duty'}
                           </span>
+                          <button
+                            onClick={() => handleRemoveMemberFromTeam(selectedTeam.id!, member.id!)}
+                            className="text-red-600 hover:text-red-800 p-1"
+                            title="Remove from team"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -439,7 +704,7 @@ const TeamsPage: React.FC = () => {
                 {/* Active Tasks */}
                 <div>
                   <h3 className="text-lg font-medium text-gray-900 mb-4">Active Tasks</h3>
-                  <div className="space-y-3">
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
                     {tasks.filter(t => 
                       t.assignedTo.type === 'team' && 
                       t.assignedTo.id === selectedTeam.id &&
@@ -447,7 +712,7 @@ const TeamsPage: React.FC = () => {
                     ).map((task) => (
                       <div key={task.id} className="p-3 bg-gray-50 rounded-lg">
                         <div className="flex justify-between items-start mb-2">
-                          <h4 className="text-sm font-medium text-gray-900">{task.title}</h4>
+                          <h4 className="text-sm font-medium text-gray-900 line-clamp-2">{task.title}</h4>
                           <span className={`px-2 py-1 text-xs font-medium rounded-full ${
                             task.priority === 'high' ? 'bg-red-100 text-red-800' :
                             task.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
@@ -456,7 +721,7 @@ const TeamsPage: React.FC = () => {
                             {task.priority}
                           </span>
                         </div>
-                        <p className="text-xs text-gray-600 mb-2">{task.description}</p>
+                        <p className="text-xs text-gray-600 mb-2 line-clamp-2">{task.description}</p>
                         <div className="flex items-center justify-between">
                           <span className={`px-2 py-1 text-xs font-medium rounded-full ${
                             task.status === 'pending' ? 'bg-gray-100 text-gray-800' :
@@ -471,17 +736,34 @@ const TeamsPage: React.FC = () => {
                         </div>
                       </div>
                     ))}
+                    
+                    {tasks.filter(t => 
+                      t.assignedTo.type === 'team' && 
+                      t.assignedTo.id === selectedTeam.id &&
+                      ['pending', 'in-progress'].includes(t.status)
+                    ).length === 0 && (
+                      <div className="text-center py-8 text-gray-500">
+                        <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                        <div>No active tasks</div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
 
               {/* Quick Actions */}
-              <div className="mt-6 pt-6 border-t border-gray-200">
+              <div className="mt-6 pt-6 border-t border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-3">
                 <button
                   onClick={() => handleNotifyTeam(selectedTeam)}
-                  className="w-full bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 font-medium"
+                  className="bg-indigo-600 text-white py-3 rounded-lg hover:bg-indigo-700 font-medium transition-colors"
                 >
                   Notify Entire Team
+                </button>
+                <button
+                  onClick={() => openEditModal(selectedTeam)}
+                  className="bg-gray-600 text-white py-3 rounded-lg hover:bg-gray-700 font-medium transition-colors"
+                >
+                  Edit Team Settings
                 </button>
               </div>
             </div>

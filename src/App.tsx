@@ -26,7 +26,6 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
     { path: '/teams', label: 'Teams', icon: UserCheck },
     { path: '/shifts', label: 'Shift Management', icon: Calendar },
     { path: '/facilities', label: 'Facilities', icon: MapPin },
-    { path: '/qr-manager', label: 'QR Manager', icon: QrCode },
     { path: '/tasks', label: 'Task Management', icon: AlertTriangle },
     { path: '/issues', label: 'Issues & Triage', icon: AlertTriangle },
     { path: '/notifications', label: 'Notifications', icon: Bell },
@@ -112,14 +111,6 @@ function App() {
           element={
             <Layout>
               <FacilitiesPage />
-            </Layout>
-          }
-        />
-        <Route
-          path="/qr-manager"
-          element={
-            <Layout>
-              <QRManagerPage />
             </Layout>
           }
         />

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, doc, updateDoc, addDoc, serverTimestamp, query, where, orderBy } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, addDoc, serverTimestamp, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { Edit, Trash2, Bell, History, User, Phone, Mail, Clock } from 'lucide-react';
+import { Edit, Trash2, Bell, History, User, Phone, Mail, Clock, MapPin, Shield } from 'lucide-react';
 import { StaffMember, StaffAudit } from '../../types/admin';
 import { getCurrentUser } from '../../firebase/auth';
 
@@ -30,20 +30,16 @@ export const StaffTable: React.FC<StaffTableProps> = ({
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [selectedStaffHistory, setSelectedStaffHistory] = useState<StaffAudit[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedStaffId, setSelectedStaffId] = useState<string>('');
   
   const itemsPerPage = 10;
 
   useEffect(() => {
-    fetchStaff();
-  }, [filters, refreshTrigger]);
-
-  const fetchStaff = async () => {
-    try {
-      setLoading(true);
-      let staffQuery = query(collection(db, 'staff'), orderBy('createdAt', 'desc'));
-      
-      const querySnapshot = await getDocs(staffQuery);
-      const staffData = querySnapshot.docs.map(doc => ({
+    // Set up real-time listener for staff collection
+    const staffQuery = query(collection(db, 'staff'), orderBy('createdAt', 'desc'));
+    
+    const unsubscribe = onSnapshot(staffQuery, (snapshot) => {
+      const staffData = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
         lastSeenAt: doc.data().lastSeenAt?.toDate?.() || new Date(doc.data().lastSeenAt || Date.now()),
@@ -51,12 +47,14 @@ export const StaffTable: React.FC<StaffTableProps> = ({
       })) as StaffMember[];
       
       setStaff(staffData);
-    } catch (error) {
-      console.error('Error fetching staff:', error);
-    } finally {
       setLoading(false);
-    }
-  };
+    }, (error) => {
+      console.error('Error listening to staff changes:', error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   const createAuditRecord = async (staffId: string, action: string, changes: Record<string, any>) => {
     try {
@@ -67,7 +65,7 @@ export const StaffTable: React.FC<StaffTableProps> = ({
         changes,
         performedBy: currentUser?.uid || 'unknown',
         timestamp: serverTimestamp(),
-        ipAddress: 'unknown' // In a real app, you'd get this from the server
+        ipAddress: 'unknown'
       });
     } catch (error) {
       console.error('Error creating audit record:', error);
@@ -92,11 +90,6 @@ export const StaffTable: React.FC<StaffTableProps> = ({
         await createAuditRecord(staffMember.id, newStatus ? 'activate' : 'deactivate', {
           isActive: { from: staffMember.isActive, to: newStatus }
         });
-
-        // Update local state
-        setStaff(prev => prev.map(s => 
-          s.id === staffMember.id ? { ...s, isActive: newStatus } : s
-        ));
       } catch (error) {
         console.error('Error updating staff status:', error);
         alert('Failed to update staff status');
@@ -106,12 +99,12 @@ export const StaffTable: React.FC<StaffTableProps> = ({
 
   const handleSendNotification = async (staffMember: StaffMember) => {
     const message = prompt(`Send notification to ${staffMember.name}:`);
-    if (message) {
+    if (message && message.trim()) {
       try {
         await addDoc(collection(db, 'notifications'), {
           to: [staffMember.mobile],
           channel: 'sms',
-          message,
+          message: message.trim(),
           status: 'pending',
           createdAt: serverTimestamp()
         });
@@ -126,6 +119,7 @@ export const StaffTable: React.FC<StaffTableProps> = ({
   const handleViewHistory = async (staffMember: StaffMember) => {
     if (!staffMember.id) return;
     
+    setSelectedStaffId(staffMember.id);
     setHistoryLoading(true);
     setShowHistoryModal(true);
     
@@ -163,6 +157,7 @@ export const StaffTable: React.FC<StaffTableProps> = ({
     const matchesFilters = 
       (!filters.role || member.role === filters.role) &&
       (!filters.shift || member.shift === filters.shift) &&
+      (!filters.zone || member.zoneId === filters.zone) &&
       (filters.active === undefined || member.isActive === filters.active);
       
     return matchesSearch && matchesFilters;
@@ -187,6 +182,24 @@ export const StaffTable: React.FC<StaffTableProps> = ({
     return 'Off Duty';
   };
 
+  const getRoleBadge = (role: string) => {
+    switch (role) {
+      case 'admin': return 'bg-purple-100 text-purple-800';
+      case 'manager': return 'bg-blue-100 text-blue-800';
+      case 'supervisor': return 'bg-orange-100 text-orange-800';
+      default: return 'bg-green-100 text-green-800';
+    }
+  };
+
+  const getShiftBadge = (shift: string) => {
+    switch (shift) {
+      case 'red': return 'bg-red-100 text-red-800';
+      case 'orange': return 'bg-orange-100 text-orange-800';
+      case 'green': return 'bg-green-100 text-green-800';
+      default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
   if (loading) {
     return (
       <div className="bg-white shadow rounded-lg p-6">
@@ -207,25 +220,19 @@ export const StaffTable: React.FC<StaffTableProps> = ({
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Name
+                  Staff Member
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Mobile
+                  Contact
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Email
+                  Role & Shift
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Role
+                  Zone
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Teams
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Shift
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  On Duty
+                  Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Last Seen
@@ -238,13 +245,19 @@ export const StaffTable: React.FC<StaffTableProps> = ({
             <tbody className="bg-white divide-y divide-gray-200">
               {paginatedStaff.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-6 py-4 text-center text-sm text-gray-500">
-                    No staff members found
+                  <td colSpan={7} className="px-6 py-8 text-center text-sm text-gray-500">
+                    <User className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                    <div>No staff members found</div>
+                    <div className="text-xs text-gray-400 mt-1">
+                      {searchTerm || Object.values(filters).some(f => f && f !== true) 
+                        ? 'Try adjusting your search or filters' 
+                        : 'Add your first staff member to get started'}
+                    </div>
                   </td>
                 </tr>
               ) : (
                 paginatedStaff.map((member) => (
-                  <tr key={member.id} className={!member.isActive ? 'bg-gray-50' : ''}>
+                  <tr key={member.id} className={`hover:bg-gray-50 ${!member.isActive ? 'bg-gray-50 opacity-75' : ''}`}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center">
                         <div className="flex-shrink-0 h-10 w-10 rounded-full bg-indigo-100 flex items-center justify-center">
@@ -252,55 +265,41 @@ export const StaffTable: React.FC<StaffTableProps> = ({
                         </div>
                         <div className="ml-4">
                           <div className="text-sm font-medium text-gray-900">{member.name}</div>
-                          <div className="text-sm text-gray-500">{member.role}</div>
+                          <div className="text-sm text-gray-500">ID: {member.id?.slice(-6)}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="space-y-1">
+                        <div className="flex items-center text-sm text-gray-900">
+                          <Phone className="h-4 w-4 mr-2 text-gray-400" />
+                          {member.mobile}
+                        </div>
+                        {member.email && (
+                          <div className="flex items-center text-sm text-gray-500">
+                            <Mail className="h-4 w-4 mr-2 text-gray-400" />
+                            {member.email}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="space-y-1">
+                        <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleBadge(member.role)}`}>
+                          {member.role}
+                        </span>
+                        <div>
+                          <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getShiftBadge(member.shift)}`}>
+                            {member.shift?.toUpperCase()}
+                          </span>
                         </div>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center text-sm text-gray-900">
-                        <Phone className="h-4 w-4 mr-2 text-gray-400" />
-                        {member.mobile}
+                        <MapPin className="h-4 w-4 mr-2 text-gray-400" />
+                        {member.zoneId || 'Unassigned'}
                       </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center text-sm text-gray-500">
-                        <Mail className="h-4 w-4 mr-2 text-gray-400" />
-                        {member.email || 'N/A'}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        member.role === 'admin' 
-                          ? 'bg-purple-100 text-purple-800' 
-                          : member.role === 'manager'
-                          ? 'bg-blue-100 text-blue-800'
-                          : member.role === 'supervisor'
-                          ? 'bg-orange-100 text-orange-800'
-                          : 'bg-green-100 text-green-800'
-                      }`}>
-                        {member.role}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex flex-wrap gap-1">
-                        {member.teamIds?.slice(0, 2).map((teamId, index) => (
-                          <span key={index} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">
-                            Team {teamId.slice(-3)}
-                          </span>
-                        ))}
-                        {member.teamIds?.length > 2 && (
-                          <span className="text-xs text-gray-500">+{member.teamIds.length - 2} more</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        member.shift === 'red' ? 'bg-red-100 text-red-800' :
-                        member.shift === 'orange' ? 'bg-orange-100 text-orange-800' :
-                        'bg-green-100 text-green-800'
-                      }`}>
-                        {member.shift?.toUpperCase()}
-                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusBadge(member)}`}>
@@ -316,28 +315,28 @@ export const StaffTable: React.FC<StaffTableProps> = ({
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
                         <button
-                          className="text-indigo-600 hover:text-indigo-900 p-1"
+                          className="text-indigo-600 hover:text-indigo-900 p-1 rounded hover:bg-indigo-50"
                           onClick={() => onEditStaff(member)}
-                          title="Edit"
+                          title="Edit Staff"
                         >
                           <Edit className="h-4 w-4" />
                         </button>
                         <button
-                          className={`p-1 ${member.isActive ? 'text-red-600 hover:text-red-900' : 'text-green-600 hover:text-green-900'}`}
+                          className={`p-1 rounded hover:bg-red-50 ${member.isActive ? 'text-red-600 hover:text-red-900' : 'text-green-600 hover:text-green-900'}`}
                           onClick={() => handleDeactivate(member)}
                           title={member.isActive ? 'Deactivate' : 'Activate'}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
                         <button
-                          className="text-blue-600 hover:text-blue-900 p-1"
+                          className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
                           onClick={() => handleSendNotification(member)}
                           title="Send Notification"
                         >
                           <Bell className="h-4 w-4" />
                         </button>
                         <button
-                          className="text-gray-600 hover:text-gray-900 p-1"
+                          className="text-gray-600 hover:text-gray-900 p-1 rounded hover:bg-gray-50"
                           onClick={() => handleViewHistory(member)}
                           title="View History"
                         >
@@ -434,14 +433,28 @@ export const StaffTable: React.FC<StaffTableProps> = ({
       {showHistoryModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl w-full max-w-4xl max-h-[80vh] overflow-hidden">
-            <div className="p-6 border-b border-gray-200">
-              <h3 className="text-lg font-medium text-gray-900">Staff History</h3>
+            <div className="p-6 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-medium text-gray-900">
+                Staff History - {staff.find(s => s.id === selectedStaffId)?.name}
+              </h3>
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X className="w-6 h-6" />
+              </button>
             </div>
             <div className="p-6 overflow-y-auto max-h-96">
               {historyLoading ? (
-                <div className="text-center py-8">Loading history...</div>
+                <div className="text-center py-8">
+                  <div className="animate-spin w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+                  <div>Loading history...</div>
+                </div>
               ) : selectedStaffHistory.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No history found</div>
+                <div className="text-center py-8 text-gray-500">
+                  <History className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                  <div>No history found</div>
+                </div>
               ) : (
                 <div className="space-y-4">
                   {selectedStaffHistory.map((audit) => (
@@ -451,9 +464,10 @@ export const StaffTable: React.FC<StaffTableProps> = ({
                           audit.action === 'create' ? 'bg-green-100 text-green-800' :
                           audit.action === 'update' ? 'bg-blue-100 text-blue-800' :
                           audit.action === 'deactivate' ? 'bg-red-100 text-red-800' :
+                          audit.action === 'activate' ? 'bg-green-100 text-green-800' :
                           'bg-gray-100 text-gray-800'
                         }`}>
-                          {audit.action}
+                          {audit.action.charAt(0).toUpperCase() + audit.action.slice(1)}
                         </span>
                         <span className="text-sm text-gray-500">
                           {new Date(audit.timestamp).toLocaleString()}
@@ -462,9 +476,17 @@ export const StaffTable: React.FC<StaffTableProps> = ({
                       {audit.changes && Object.keys(audit.changes).length > 0 && (
                         <div className="text-sm text-gray-600">
                           <strong>Changes:</strong>
-                          <pre className="mt-1 text-xs bg-gray-50 p-2 rounded">
-                            {JSON.stringify(audit.changes, null, 2)}
-                          </pre>
+                          <div className="mt-1 text-xs bg-gray-50 p-2 rounded max-h-32 overflow-y-auto">
+                            {Object.entries(audit.changes).map(([key, value]) => (
+                              <div key={key} className="mb-1">
+                                <span className="font-medium">{key}:</span> {
+                                  typeof value === 'object' && value !== null 
+                                    ? JSON.stringify(value) 
+                                    : String(value)
+                                }
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>

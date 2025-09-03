@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, query, where, orderBy } from 'firebase/firestore';
+import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { AlertTriangle, Clock, User, Camera, CheckCircle, Plus, Filter } from 'lucide-react';
+import { AlertTriangle, Clock, User, Camera, CheckCircle, Plus, Filter, X, MapPin, Phone, Mail } from 'lucide-react';
 import { Issue, StaffMember, Team, Facility } from '../../types/admin';
 import { getCurrentUser } from '../../firebase/auth';
 
@@ -42,51 +42,85 @@ const IssuesPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    // Real-time listeners
+    const issuesQuery = query(collection(db, 'issues'), orderBy('reportedAt', 'desc'));
+    const staffQuery = query(collection(db, 'staff'), where('isActive', '==', true));
+    const teamsQuery = query(collection(db, 'teams'), where('isActive', '==', true));
+    const facilitiesQuery = query(collection(db, 'facilities'));
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      
-      const issuesQuery = query(collection(db, 'issues'), orderBy('reportedAt', 'desc'));
-      const [issuesSnapshot, staffSnapshot, teamsSnapshot, facilitiesSnapshot] = await Promise.all([
-        getDocs(issuesQuery),
-        getDocs(collection(db, 'staff')),
-        getDocs(collection(db, 'teams')),
-        getDocs(collection(db, 'facilities'))
-      ]);
-      
-      setIssues(issuesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Issue[]);
-      setStaff(staffSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as StaffMember[]);
-      setTeams(teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Team[]);
-      setFacilities(facilitiesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Facility[]);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
+    const unsubscribeIssues = onSnapshot(issuesQuery, (snapshot) => {
+      const issuesData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        reportedAt: doc.data().reportedAt?.toDate?.() || new Date(),
+        resolvedAt: doc.data().resolvedAt?.toDate?.()
+      })) as Issue[];
+      setIssues(issuesData);
+    });
+
+    const unsubscribeStaff = onSnapshot(staffQuery, (snapshot) => {
+      const staffData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as StaffMember[];
+      setStaff(staffData);
+    });
+
+    const unsubscribeTeams = onSnapshot(teamsQuery, (snapshot) => {
+      const teamsData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Team[];
+      setTeams(teamsData);
+    });
+
+    const unsubscribeFacilities = onSnapshot(facilitiesQuery, (snapshot) => {
+      const facilitiesData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Facility[];
+      setFacilities(facilitiesData);
       setLoading(false);
-    }
-  };
+    });
+
+    return () => {
+      unsubscribeIssues();
+      unsubscribeStaff();
+      unsubscribeTeams();
+      unsubscribeFacilities();
+    };
+  }, []);
 
   const handleCreateIssue = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    if (!newIssue.description.trim()) {
+      alert('Issue description is required');
+      return;
+    }
+
     try {
-      await addDoc(collection(db, 'issues'), {
+      const currentUser = getCurrentUser();
+      
+      const issueData = {
         ...newIssue,
+        description: newIssue.description.trim(),
         photos: [],
         reportedAt: serverTimestamp(),
-        status: 'open'
-      });
+        status: 'open' as const,
+        createdBy: currentUser?.uid || 'unknown'
+      };
+
+      const docRef = await addDoc(collection(db, 'issues'), issueData);
       
       // Auto-assign based on severity and create task
       if (newIssue.severity === 'high' || newIssue.severity === 'critical') {
         await addDoc(collection(db, 'tasks'), {
           title: `${newIssue.severity.toUpperCase()}: ${newIssue.category} issue`,
           description: newIssue.description,
-          facilityId: newIssue.facilityId,
+          facilityId: newIssue.facilityId || undefined,
           zoneId: newIssue.zoneId,
-          assignedTo: { type: 'team', id: '' }, // Auto-assign logic would go here
+          assignedTo: { type: 'team', id: '' },
           priority: newIssue.severity === 'critical' ? 'high' : 'medium',
           status: 'pending',
           createdAt: serverTimestamp(),
@@ -94,21 +128,13 @@ const IssuesPage: React.FC = () => {
           dueAt: new Date(Date.now() + severityConfig[newIssue.severity].slaMinutes * 60 * 1000),
           slaMinutes: severityConfig[newIssue.severity].slaMinutes,
           photosBefore: [],
-          photosAfter: []
+          photosAfter: [],
+          issueId: docRef.id
         });
       }
       
       setShowCreateModal(false);
-      setNewIssue({
-        facilityId: '',
-        zoneId: 'North',
-        category: 'cleanliness',
-        severity: 'medium',
-        description: '',
-        reportedBy: { anonymous: false, contact: '', name: '' }
-      });
-      
-      fetchData();
+      resetIssueForm();
       alert('Issue reported successfully!');
     } catch (error) {
       console.error('Error creating issue:', error);
@@ -116,23 +142,50 @@ const IssuesPage: React.FC = () => {
     }
   };
 
+  const resetIssueForm = () => {
+    setNewIssue({
+      facilityId: '',
+      zoneId: 'North',
+      category: 'cleanliness',
+      severity: 'medium',
+      description: '',
+      reportedBy: { anonymous: false, contact: '', name: '' }
+    });
+  };
+
   const handleStatusUpdate = async (issueId: string, newStatus: string) => {
     try {
+      const currentUser = getCurrentUser();
       const updateData: any = {
         status: newStatus,
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        updatedBy: currentUser?.uid || 'unknown'
       };
 
       if (newStatus === 'resolved') {
         updateData.resolvedAt = serverTimestamp();
+        updateData.resolvedBy = currentUser?.uid || 'unknown';
       }
 
       await updateDoc(doc(db, 'issues', issueId), updateData);
-      fetchData();
       alert('Issue status updated successfully!');
     } catch (error) {
       console.error('Error updating issue status:', error);
       alert('Failed to update issue status');
+    }
+  };
+
+  const handleAssignIssue = async (issueId: string, assignedTo: { type: 'staff' | 'team'; id: string }) => {
+    try {
+      await updateDoc(doc(db, 'issues', issueId), {
+        assignedTo,
+        status: 'assigned',
+        assignedAt: serverTimestamp()
+      });
+      alert('Issue assigned successfully!');
+    } catch (error) {
+      console.error('Error assigning issue:', error);
+      alert('Failed to assign issue');
     }
   };
 
@@ -172,11 +225,23 @@ const IssuesPage: React.FC = () => {
 
   // Group by severity for triage
   const triageGroups = {
-    critical: filteredIssues.filter(i => i.severity === 'critical' && i.status === 'open'),
-    high: filteredIssues.filter(i => i.severity === 'high' && i.status === 'open'),
-    medium: filteredIssues.filter(i => i.severity === 'medium' && i.status === 'open'),
-    low: filteredIssues.filter(i => i.severity === 'low' && i.status === 'open')
+    critical: filteredIssues.filter(i => i.severity === 'critical' && ['open', 'assigned'].includes(i.status)),
+    high: filteredIssues.filter(i => i.severity === 'high' && ['open', 'assigned'].includes(i.status)),
+    medium: filteredIssues.filter(i => i.severity === 'medium' && ['open', 'assigned'].includes(i.status)),
+    low: filteredIssues.filter(i => i.severity === 'low' && ['open', 'assigned'].includes(i.status))
   };
+
+  const getIssueStats = () => {
+    const total = issues.length;
+    const open = issues.filter(i => i.status === 'open').length;
+    const assigned = issues.filter(i => i.status === 'assigned').length;
+    const inProgress = issues.filter(i => i.status === 'in-progress').length;
+    const resolved = issues.filter(i => i.status === 'resolved').length;
+    
+    return { total, open, assigned, inProgress, resolved };
+  };
+
+  const issueStats = getIssueStats();
 
   if (loading) {
     return (
@@ -198,12 +263,68 @@ const IssuesPage: React.FC = () => {
           <p className="text-sm text-gray-600 mt-1">Monitor and resolve facility issues</p>
         </div>
         <button
-          onClick={() => setShowCreateModal(true)}
+          onClick={() => {
+            resetIssueForm();
+            setShowCreateModal(true);
+          }}
           className="flex items-center px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
         >
           <Plus className="h-4 w-4 mr-2" />
           Report Issue
         </button>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-6">
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <AlertTriangle className="h-8 w-8 text-gray-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Total Issues</p>
+              <p className="text-2xl font-semibold text-gray-900">{issueStats.total}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <AlertTriangle className="h-8 w-8 text-red-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Open</p>
+              <p className="text-2xl font-semibold text-gray-900">{issueStats.open}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <User className="h-8 w-8 text-yellow-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Assigned</p>
+              <p className="text-2xl font-semibold text-gray-900">{issueStats.assigned}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <Clock className="h-8 w-8 text-blue-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">In Progress</p>
+              <p className="text-2xl font-semibold text-gray-900">{issueStats.inProgress}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <CheckCircle className="h-8 w-8 text-green-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Resolved</p>
+              <p className="text-2xl font-semibold text-gray-900">{issueStats.resolved}</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Triage Queue */}
@@ -222,14 +343,17 @@ const IssuesPage: React.FC = () => {
                 return (
                   <div
                     key={issue.id}
-                    className="p-2 border border-gray-200 rounded cursor-pointer hover:bg-gray-50"
+                    className="p-2 border border-gray-200 rounded cursor-pointer hover:bg-gray-50 transition-colors"
                     onClick={() => {
                       setSelectedIssue(issue);
                       setShowIssueDetail(true);
                     }}
                   >
                     <div className="text-sm font-medium text-gray-900 line-clamp-2">
-                      {facility?.code || 'Unknown'} - {issue.category}
+                      {facility?.code || 'General'} - {issue.category}
+                    </div>
+                    <div className="text-xs text-gray-600 line-clamp-1 mt-1">
+                      {issue.description}
                     </div>
                     <div className="flex items-center justify-between mt-1">
                       <span className="text-xs text-gray-500">
@@ -245,6 +369,12 @@ const IssuesPage: React.FC = () => {
               {issueList.length > 5 && (
                 <div className="text-xs text-gray-500 text-center">
                   +{issueList.length - 5} more
+                </div>
+              )}
+              {issueList.length === 0 && (
+                <div className="text-center py-4 text-gray-400">
+                  <CheckCircle className="w-8 h-8 mx-auto mb-2" />
+                  <div className="text-xs">No {severity} issues</div>
                 </div>
               )}
             </div>
@@ -337,7 +467,7 @@ const IssuesPage: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">{facility?.code || 'General'}</div>
-                      <div className="text-sm text-gray-500">{facility?.type}</div>
+                      <div className="text-sm text-gray-500">{facility?.type || 'N/A'}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${severityConfig[issue.severity].color}`}>
@@ -393,7 +523,7 @@ const IssuesPage: React.FC = () => {
       {/* Create Issue Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl w-full max-w-2xl">
+          <div className="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex justify-between items-center">
               <h2 className="text-xl font-bold text-gray-900">Report New Issue</h2>
               <button
@@ -428,7 +558,7 @@ const IssuesPage: React.FC = () => {
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                   >
                     <option value="">General Issue</option>
-                    {facilities.map(facility => (
+                    {facilities.filter(f => !f.isDeleted).map(facility => (
                       <option key={facility.id} value={facility.id}>
                         {facility.code} ({facility.type})
                       </option>
@@ -598,18 +728,51 @@ const IssuesPage: React.FC = () => {
                         {selectedIssue.reportedBy.anonymous ? 'Anonymous' : selectedIssue.reportedBy.name}
                       </span>
                     </div>
+                    {selectedIssue.reportedBy.contact && !selectedIssue.reportedBy.anonymous && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Contact:</span>
+                        <span className="font-medium">{selectedIssue.reportedBy.contact}</span>
+                      </div>
+                    )}
                   </div>
+
+                  {/* Assignment */}
+                  {selectedIssue.status === 'open' && (
+                    <div className="mt-6">
+                      <h4 className="text-sm font-medium text-gray-700 mb-2">Assign Issue</h4>
+                      <div className="flex space-x-2">
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAssignIssue(selectedIssue.id!, { type: 'team', id: e.target.value });
+                            }
+                          }}
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm"
+                        >
+                          <option value="">Assign to team...</option>
+                          {teams.map(team => (
+                            <option key={team.id} value={team.id}>{team.name}</option>
+                          ))}
+                        </select>
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAssignIssue(selectedIssue.id!, { type: 'staff', id: e.target.value });
+                            }
+                          }}
+                          className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm"
+                        >
+                          <option value="">Assign to staff...</option>
+                          {staff.map(member => (
+                            <option key={member.id} value={member.id}>{member.name} ({member.role})</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Status Update Actions */}
                   <div className="mt-6 space-y-2">
-                    {selectedIssue.status === 'open' && (
-                      <button
-                        onClick={() => handleStatusUpdate(selectedIssue.id!, 'assigned')}
-                        className="w-full bg-yellow-100 text-yellow-800 py-2 rounded-lg hover:bg-yellow-200 font-medium"
-                      >
-                        Assign Issue
-                      </button>
-                    )}
                     {selectedIssue.status === 'assigned' && (
                       <button
                         onClick={() => handleStatusUpdate(selectedIssue.id!, 'in-progress')}
@@ -652,7 +815,7 @@ const IssuesPage: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Timeline would go here */}
+                    {/* Timeline */}
                     <div className="space-y-3">
                       <div className="flex items-center space-x-3">
                         <div className="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center">
@@ -665,6 +828,20 @@ const IssuesPage: React.FC = () => {
                           </div>
                         </div>
                       </div>
+
+                      {selectedIssue.assignedAt && (
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 bg-yellow-100 rounded-full flex items-center justify-center">
+                            <User className="w-4 h-4 text-yellow-600" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">Issue Assigned</div>
+                            <div className="text-xs text-gray-500">
+                              {new Date(selectedIssue.assignedAt).toLocaleString()}
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {selectedIssue.resolvedAt && (
                         <div className="flex items-center space-x-3">

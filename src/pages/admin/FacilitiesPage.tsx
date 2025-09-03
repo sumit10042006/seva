@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, query, where } from 'firebase/firestore';
+import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, query, where, onSnapshot, orderBy } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { MapPin, Plus, Search, Filter, Camera, Wrench, CheckCircle, AlertTriangle, QrCode } from 'lucide-react';
+import { MapPin, Plus, Search, Filter, Camera, Wrench, CheckCircle, AlertTriangle, QrCode, X, Edit, Trash2 } from 'lucide-react';
 import { Facility, Task } from '../../types/admin';
+import { getCurrentUser } from '../../firebase/auth';
 
 const FacilitiesPage: React.FC = () => {
   const [facilities, setFacilities] = useState<Facility[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<'table' | 'map'>('table');
+  const [viewMode, setViewMode] = useState<'table' | 'grid'>('grid');
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState({
     type: '',
@@ -18,6 +19,7 @@ const FacilitiesPage: React.FC = () => {
   const [selectedFacility, setSelectedFacility] = useState<Facility | null>(null);
   const [showFacilityDetail, setShowFacilityDetail] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingFacility, setEditingFacility] = useState<Facility | null>(null);
 
   const [newFacility, setNewFacility] = useState({
     code: '',
@@ -30,98 +32,168 @@ const FacilitiesPage: React.FC = () => {
   });
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    // Real-time listeners
+    const facilitiesQuery = query(collection(db, 'facilities'), orderBy('code'));
+    const tasksQuery = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      
-      const facilitiesSnapshot = await getDocs(collection(db, 'facilities'));
-      const facilitiesData = facilitiesSnapshot.docs.map(doc => ({
+    const unsubscribeFacilities = onSnapshot(facilitiesQuery, (snapshot) => {
+      const facilitiesData = snapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data()
+        ...doc.data(),
+        lastUpdated: doc.data().lastUpdated?.toDate?.() || new Date(),
+        createdAt: doc.data().createdAt?.toDate?.() || new Date()
       })) as Facility[];
-      
-      const tasksSnapshot = await getDocs(collection(db, 'tasks'));
-      const tasksData = tasksSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Task[];
-      
       setFacilities(facilitiesData);
+    });
+
+    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        createdAt: doc.data().createdAt?.toDate?.() || new Date(),
+        dueAt: doc.data().dueAt?.toDate?.() || new Date()
+      })) as Task[];
       setTasks(tasksData);
-    } catch (error) {
-      console.error('Error fetching data:', error);
-    } finally {
       setLoading(false);
-    }
-  };
+    });
+
+    return () => {
+      unsubscribeFacilities();
+      unsubscribeTasks();
+    };
+  }, []);
 
   const handleCreateFacility = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    if (!newFacility.code.trim()) {
+      alert('Facility code is required');
+      return;
+    }
+
+    // Check for duplicate codes
+    const existingFacility = facilities.find(f => f.code.toLowerCase() === newFacility.code.toLowerCase());
+    if (existingFacility && (!editingFacility || existingFacility.id !== editingFacility.id)) {
+      alert('Facility code already exists');
+      return;
+    }
+
     try {
-      await addDoc(collection(db, 'facilities'), {
+      const currentUser = getCurrentUser();
+      const facilityData = {
         ...newFacility,
+        code: newFacility.code.trim().toUpperCase(),
         photos: [],
         lastUpdated: serverTimestamp(),
-        createdAt: serverTimestamp()
-      });
+        createdAt: editingFacility ? editingFacility.createdAt : serverTimestamp(),
+        createdBy: editingFacility ? editingFacility.createdBy : (currentUser?.uid || 'unknown')
+      };
+
+      if (editingFacility?.id) {
+        await updateDoc(doc(db, 'facilities', editingFacility.id), {
+          ...facilityData,
+          updatedAt: serverTimestamp()
+        });
+        alert('Facility updated successfully!');
+      } else {
+        await addDoc(collection(db, 'facilities'), facilityData);
+        alert('Facility created successfully!');
+      }
       
       setShowCreateModal(false);
-      setNewFacility({
-        code: '',
-        type: 'toilet',
-        zoneId: 'North',
-        lat: 0,
-        lng: 0,
-        capacity: 10,
-        status: 'available'
-      });
-      
-      fetchData();
-      alert('Facility created successfully!');
+      setEditingFacility(null);
+      resetForm();
     } catch (error) {
-      console.error('Error creating facility:', error);
-      alert('Failed to create facility');
+      console.error('Error saving facility:', error);
+      alert('Failed to save facility');
     }
+  };
+
+  const resetForm = () => {
+    setNewFacility({
+      code: '',
+      type: 'toilet',
+      zoneId: 'North',
+      lat: 0,
+      lng: 0,
+      capacity: 10,
+      status: 'available'
+    });
+  };
+
+  const openEditModal = (facility: Facility) => {
+    setEditingFacility(facility);
+    setNewFacility({
+      code: facility.code,
+      type: facility.type,
+      zoneId: facility.zoneId,
+      lat: facility.lat,
+      lng: facility.lng,
+      capacity: facility.capacity || 10,
+      status: facility.status
+    });
+    setShowCreateModal(true);
   };
 
   const handleStatusUpdate = async (facility: Facility, newStatus: string) => {
     if (!facility.id) return;
     
     try {
+      const currentUser = getCurrentUser();
+      
       await updateDoc(doc(db, 'facilities', facility.id), {
         status: newStatus,
-        lastUpdated: serverTimestamp()
+        lastUpdated: serverTimestamp(),
+        updatedBy: currentUser?.uid || 'unknown'
       });
 
       // Auto-create task for certain status changes
       if (newStatus === 'maintenance' || newStatus === 'full') {
         const taskTitle = newStatus === 'maintenance' ? 'Maintenance Required' : 'Empty/Clean Required';
+        const priority = newStatus === 'maintenance' ? 'high' : 'medium';
+        
         await addDoc(collection(db, 'tasks'), {
-          title: taskTitle,
+          title: `${taskTitle} - ${facility.code}`,
           description: `${facility.type} ${facility.code} requires ${newStatus === 'maintenance' ? 'maintenance' : 'cleaning/emptying'}`,
           facilityId: facility.id,
           zoneId: facility.zoneId,
           assignedTo: { type: 'team', id: '' },
-          priority: newStatus === 'maintenance' ? 'high' : 'medium',
+          priority,
           status: 'pending',
           createdAt: serverTimestamp(),
           createdBy: 'system',
-          dueAt: new Date(Date.now() + 2 * 60 * 60 * 1000), // 2 hours from now
-          slaMinutes: 120,
+          dueAt: new Date(Date.now() + (newStatus === 'maintenance' ? 60 : 120) * 60 * 1000),
+          slaMinutes: newStatus === 'maintenance' ? 60 : 120,
           photosBefore: [],
           photosAfter: []
         });
       }
 
-      fetchData();
       alert('Status updated successfully!');
     } catch (error) {
       console.error('Error updating status:', error);
       alert('Failed to update status');
+    }
+  };
+
+  const handleDeleteFacility = async (facility: Facility) => {
+    if (!facility.id) return;
+    
+    const confirmed = window.confirm(
+      `Are you sure you want to delete facility "${facility.code}"? This action cannot be undone.`
+    );
+    
+    if (confirmed) {
+      try {
+        await updateDoc(doc(db, 'facilities', facility.id), {
+          isDeleted: true,
+          deletedAt: serverTimestamp()
+        });
+        alert('Facility deleted successfully!');
+      } catch (error) {
+        console.error('Error deleting facility:', error);
+        alert('Failed to delete facility');
+      }
     }
   };
 
@@ -147,6 +219,8 @@ const FacilitiesPage: React.FC = () => {
   };
 
   const filteredFacilities = facilities.filter(facility => {
+    if (facility.isDeleted) return false;
+    
     const searchLower = searchTerm.toLowerCase();
     const matchesSearch = 
       facility.code.toLowerCase().includes(searchLower) ||
@@ -160,6 +234,17 @@ const FacilitiesPage: React.FC = () => {
       
     return matchesSearch && matchesFilters;
   });
+
+  const getFacilityStats = () => {
+    const total = filteredFacilities.length;
+    const available = filteredFacilities.filter(f => f.status === 'available').length;
+    const maintenance = filteredFacilities.filter(f => f.status === 'maintenance').length;
+    const occupied = filteredFacilities.filter(f => f.status === 'occupied').length;
+    
+    return { total, available, maintenance, occupied };
+  };
+
+  const stats = getFacilityStats();
 
   if (loading) {
     return (
@@ -183,6 +268,14 @@ const FacilitiesPage: React.FC = () => {
         <div className="flex space-x-3">
           <div className="flex bg-gray-100 rounded-lg p-1">
             <button
+              onClick={() => setViewMode('grid')}
+              className={`px-3 py-1 rounded-md text-sm font-medium ${
+                viewMode === 'grid' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'
+              }`}
+            >
+              Grid
+            </button>
+            <button
               onClick={() => setViewMode('table')}
               className={`px-3 py-1 rounded-md text-sm font-medium ${
                 viewMode === 'table' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'
@@ -190,22 +283,61 @@ const FacilitiesPage: React.FC = () => {
             >
               Table
             </button>
-            <button
-              onClick={() => setViewMode('map')}
-              className={`px-3 py-1 rounded-md text-sm font-medium ${
-                viewMode === 'map' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'
-              }`}
-            >
-              Map
-            </button>
           </div>
           <button
-            onClick={() => setShowCreateModal(true)}
+            onClick={() => {
+              setEditingFacility(null);
+              resetForm();
+              setShowCreateModal(true);
+            }}
             className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Facility
           </button>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <MapPin className="h-8 w-8 text-indigo-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Total Facilities</p>
+              <p className="text-2xl font-semibold text-gray-900">{stats.total}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <CheckCircle className="h-8 w-8 text-green-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Available</p>
+              <p className="text-2xl font-semibold text-gray-900">{stats.available}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <AlertTriangle className="h-8 w-8 text-red-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Maintenance</p>
+              <p className="text-2xl font-semibold text-gray-900">{stats.maintenance}</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="flex items-center">
+            <Clock className="h-8 w-8 text-yellow-600" />
+            <div className="ml-4">
+              <p className="text-sm font-medium text-gray-500">Occupied</p>
+              <p className="text-2xl font-semibold text-gray-900">{stats.occupied}</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -248,6 +380,7 @@ const FacilitiesPage: React.FC = () => {
               <option value="South">South</option>
               <option value="East">East</option>
               <option value="West">West</option>
+              <option value="Central">Central</option>
             </select>
             
             <select
@@ -266,7 +399,104 @@ const FacilitiesPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Facilities Table */}
+      {/* Grid View */}
+      {viewMode === 'grid' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {filteredFacilities.map((facility) => {
+            const facilityTasks = tasks.filter(t => t.facilityId === facility.id && ['pending', 'in-progress'].includes(t.status));
+            
+            return (
+              <div key={facility.id} className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition-shadow">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-2xl">{getTypeIcon(facility.type)}</span>
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">{facility.code}</h3>
+                      <p className="text-sm text-gray-500 capitalize">{facility.type}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    {facility.qrId && (
+                      <QrCode className="w-4 h-4 text-green-600" title="QR Code Available" />
+                    )}
+                    <button
+                      onClick={() => openEditModal(facility)}
+                      className="text-gray-400 hover:text-gray-600 p-1"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2 mb-4">
+                  <div className="flex items-center text-sm text-gray-600">
+                    <MapPin className="w-4 h-4 mr-2" />
+                    {facility.zoneId}
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-gray-600">Status:</span>
+                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusBadge(facility.status)}`}>
+                      {facility.status.replace('-', ' ')}
+                    </span>
+                  </div>
+                  {facility.capacity && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-gray-600">Capacity:</span>
+                      <span className="text-sm font-medium text-gray-900">{facility.capacity}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Active Tasks */}
+                {facilityTasks.length > 0 && (
+                  <div className="mb-4">
+                    <div className="text-xs font-medium text-gray-700 mb-2">Active Tasks ({facilityTasks.length})</div>
+                    <div className="space-y-1">
+                      {facilityTasks.slice(0, 2).map(task => (
+                        <div key={task.id} className="text-xs bg-yellow-50 border border-yellow-200 rounded p-2">
+                          <div className="font-medium text-yellow-800">{task.title}</div>
+                          <div className="text-yellow-600">Due: {new Date(task.dueAt).toLocaleDateString()}</div>
+                        </div>
+                      ))}
+                      {facilityTasks.length > 2 && (
+                        <div className="text-xs text-gray-500">+{facilityTasks.length - 2} more tasks</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Quick Actions */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => handleStatusUpdate(facility, 'available')}
+                    className="bg-green-100 text-green-800 py-2 px-3 rounded-lg hover:bg-green-200 text-xs font-medium"
+                  >
+                    Mark Clean
+                  </button>
+                  <button
+                    onClick={() => handleStatusUpdate(facility, 'maintenance')}
+                    className="bg-red-100 text-red-800 py-2 px-3 rounded-lg hover:bg-red-200 text-xs font-medium"
+                  >
+                    Maintenance
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSelectedFacility(facility);
+                    setShowFacilityDetail(true);
+                  }}
+                  className="w-full mt-2 bg-gray-100 text-gray-700 py-2 px-3 rounded-lg hover:bg-gray-200 text-sm font-medium"
+                >
+                  View Details
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Table View */}
       {viewMode === 'table' && (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           <div className="overflow-x-auto">
@@ -277,8 +507,8 @@ const FacilitiesPage: React.FC = () => {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Zone</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Capacity</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Updated</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">QR</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -302,15 +532,11 @@ const FacilitiesPage: React.FC = () => {
                         {facility.status.replace('-', ' ')}
                       </span>
                     </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {facility.capacity || 'N/A'}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {new Date(facility.lastUpdated).toLocaleString()}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {facility.qrId ? (
-                        <QrCode className="w-4 h-4 text-green-600" />
-                      ) : (
-                        <span className="text-xs text-gray-400">No QR</span>
-                      )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex justify-end space-x-2">
@@ -329,11 +555,18 @@ const FacilitiesPage: React.FC = () => {
                           <Wrench className="h-4 w-4" />
                         </button>
                         <button
+                          onClick={() => openEditModal(facility)}
+                          className="text-indigo-600 hover:text-indigo-900 p-1"
+                          title="Edit Facility"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </button>
+                        <button
                           onClick={() => {
                             setSelectedFacility(facility);
                             setShowFacilityDetail(true);
                           }}
-                          className="text-indigo-600 hover:text-indigo-900 p-1"
+                          className="text-blue-600 hover:text-blue-900 p-1"
                           title="View Details"
                         >
                           <Camera className="h-4 w-4" />
@@ -348,38 +581,20 @@ const FacilitiesPage: React.FC = () => {
         </div>
       )}
 
-      {/* Map View */}
-      {viewMode === 'map' && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="text-center py-12">
-            <MapPin className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">Map View</h3>
-            <p className="text-gray-600">Interactive map showing all facilities would be displayed here</p>
-            <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-              {filteredFacilities.slice(0, 8).map((facility) => (
-                <div key={facility.id} className="p-3 border border-gray-200 rounded-lg">
-                  <div className="flex items-center mb-2">
-                    <span className="text-lg mr-2">{getTypeIcon(facility.type)}</span>
-                    <span className="text-sm font-medium">{facility.code}</span>
-                  </div>
-                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusBadge(facility.status)}`}>
-                    {facility.status}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Create Facility Modal */}
+      {/* Create/Edit Facility Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl w-full max-w-2xl">
             <div className="p-6 border-b border-gray-200 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-gray-900">Add New Facility</h2>
+              <h2 className="text-xl font-bold text-gray-900">
+                {editingFacility ? 'Edit Facility' : 'Add New Facility'}
+              </h2>
               <button
-                onClick={() => setShowCreateModal(false)}
+                onClick={() => {
+                  setShowCreateModal(false);
+                  setEditingFacility(null);
+                  resetForm();
+                }}
                 className="text-gray-500 hover:text-gray-700"
               >
                 <X className="w-6 h-6" />
@@ -440,7 +655,7 @@ const FacilitiesPage: React.FC = () => {
                   <input
                     type="number"
                     value={newFacility.capacity}
-                    onChange={(e) => setNewFacility({ ...newFacility, capacity: parseInt(e.target.value) })}
+                    onChange={(e) => setNewFacility({ ...newFacility, capacity: parseInt(e.target.value) || 10 })}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     min="1"
                   />
@@ -454,7 +669,7 @@ const FacilitiesPage: React.FC = () => {
                     type="number"
                     step="0.000001"
                     value={newFacility.lat}
-                    onChange={(e) => setNewFacility({ ...newFacility, lat: parseFloat(e.target.value) })}
+                    onChange={(e) => setNewFacility({ ...newFacility, lat: parseFloat(e.target.value) || 0 })}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     placeholder="e.g., 25.3176"
                   />
@@ -466,7 +681,7 @@ const FacilitiesPage: React.FC = () => {
                     type="number"
                     step="0.000001"
                     value={newFacility.lng}
-                    onChange={(e) => setNewFacility({ ...newFacility, lng: parseFloat(e.target.value) })}
+                    onChange={(e) => setNewFacility({ ...newFacility, lng: parseFloat(e.target.value) || 0 })}
                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     placeholder="e.g., 83.0131"
                   />
@@ -476,7 +691,11 @@ const FacilitiesPage: React.FC = () => {
               <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200">
                 <button
                   type="button"
-                  onClick={() => setShowCreateModal(false)}
+                  onClick={() => {
+                    setShowCreateModal(false);
+                    setEditingFacility(null);
+                    resetForm();
+                  }}
                   className="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
                 >
                   Cancel
@@ -486,7 +705,7 @@ const FacilitiesPage: React.FC = () => {
                   className="flex items-center space-x-2 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>Add Facility</span>
+                  <span>{editingFacility ? 'Update Facility' : 'Add Facility'}</span>
                 </button>
               </div>
             </form>
@@ -537,6 +756,16 @@ const FacilitiesPage: React.FC = () => {
                       <span className="text-gray-600">Location:</span>
                       <span className="font-medium">{selectedFacility.lat.toFixed(6)}, {selectedFacility.lng.toFixed(6)}</span>
                     </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">QR Code:</span>
+                      <span className="font-medium">
+                        {selectedFacility.qrId ? (
+                          <span className="text-green-600">Available</span>
+                        ) : (
+                          <span className="text-gray-400">Not Generated</span>
+                        )}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Quick Actions */}
@@ -545,13 +774,13 @@ const FacilitiesPage: React.FC = () => {
                       onClick={() => handleStatusUpdate(selectedFacility, 'available')}
                       className="w-full bg-green-100 text-green-800 py-2 rounded-lg hover:bg-green-200 font-medium"
                     >
-                      Mark Clean
+                      Mark Clean & Available
                     </button>
                     <button
                       onClick={() => handleStatusUpdate(selectedFacility, 'maintenance')}
                       className="w-full bg-red-100 text-red-800 py-2 rounded-lg hover:bg-red-200 font-medium"
                     >
-                      Report Maintenance
+                      Report Maintenance Issue
                     </button>
                     <button
                       onClick={() => handleStatusUpdate(selectedFacility, 'full')}
@@ -559,12 +788,18 @@ const FacilitiesPage: React.FC = () => {
                     >
                       Mark Full
                     </button>
+                    <button
+                      onClick={() => openEditModal(selectedFacility)}
+                      className="w-full bg-indigo-100 text-indigo-800 py-2 rounded-lg hover:bg-indigo-200 font-medium"
+                    >
+                      Edit Facility
+                    </button>
                   </div>
                 </div>
 
                 <div>
                   <h3 className="text-lg font-medium text-gray-900 mb-4">Assigned Tasks</h3>
-                  <div className="space-y-3">
+                  <div className="space-y-3 max-h-64 overflow-y-auto">
                     {tasks.filter(t => t.facilityId === selectedFacility.id).map((task) => (
                       <div key={task.id} className="p-3 bg-gray-50 rounded-lg">
                         <div className="flex justify-between items-start mb-2">
@@ -593,6 +828,13 @@ const FacilitiesPage: React.FC = () => {
                         </div>
                       </div>
                     ))}
+                    
+                    {tasks.filter(t => t.facilityId === selectedFacility.id).length === 0 && (
+                      <div className="text-center py-8 text-gray-500">
+                        <Clock className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                        <div>No tasks assigned</div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
