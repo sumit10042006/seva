@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { collection, getDocs, query, where, orderBy, limit } from 'firebase/firestore';
+import { collection, getDocs, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { BarChart2, Search, Users, AlertTriangle, Clock, Mail, Calendar, Filter } from 'lucide-react';
+import { BarChart2, Search, Users, AlertTriangle, Clock, Mail, Calendar, Filter, RefreshCw } from 'lucide-react';
+import { initializeSampleData } from '../utils/firebase-init';
 
 interface StaffMember {
   id: string;
@@ -72,105 +73,57 @@ const Dashboard: React.FC = () => {
   });
   const [showFilters, setShowFilters] = useState(false);
 
-  const fetchStaff = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      let staffQuery = query(collection(db, 'staff'));
-      
-      // Apply filters
-      if (filters.zone !== 'all') {
-        staffQuery = query(staffQuery, where('zone', '==', filters.zone));
-      }
-      if (filters.status !== 'all') {
-        staffQuery = query(staffQuery, where('status', '==', filters.status));
-      }
-      if (filters.department !== 'all') {
-        staffQuery = query(staffQuery, where('department', '==', filters.department));
-      }
-      
-      const querySnapshot = await getDocs(staffQuery);
-      const staffData = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as StaffMember[];
-      setStaff(staffData);
-    } catch (error) {
-      console.error('Error fetching staff:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [filters]);
-
-  const fetchActivities = useCallback(async () => {
-    try {
-      // First check if we have permissions
-      try {
-        // Test query to check permissions
-        await getDocs(collection(db, 'activities'));
-      } catch (permError) {
-        console.error('Permission error:', permError);
-        setActivities([]);
-        return;
-      }
-
-      let activitiesQuery = query(
-        collection(db, 'activities'),
-        orderBy('timestamp', 'desc'),
-        limit(10)
-      );
-      
-      // Apply date range filter
-      if (filters.dateRange === 'today') {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        activitiesQuery = query(
-          activitiesQuery,
-          where('timestamp', '>=', today)
-        );
-      } else if (filters.dateRange === 'week') {
-        const lastWeek = new Date();
-        lastWeek.setDate(lastWeek.getDate() - 7);
-        activitiesQuery = query(
-          activitiesQuery,
-          where('timestamp', '>=', lastWeek)
-        );
-      }
-      
-      const querySnapshot = await getDocs(activitiesQuery);
-      const activitiesData = querySnapshot.docs
-        .map(doc => {
-          try {
-            const data = doc.data();
-            if (!data) return null;
-            
-            // Ensure all required fields have default values
-            return {
-              id: doc.id,
-              title: data.title || 'No Title',
-              type: data.type || 'task',
-              status: data.status || 'pending',
-              timestamp: data.timestamp || new Date(),
-              time: data.time || new Date().toLocaleTimeString(),
-              ...data
-            };
-          } catch (e) {
-            console.error('Error processing activity:', e);
-            return null;
-          }
-        })
-        .filter(Boolean) as Activity[];
-      
-      setActivities(activitiesData);
-    } catch (error) {
-      console.error('Error fetching activities:', error);
-      setActivities([]);
-    }
-  }, [filters.dateRange]);
+  const [hasData, setHasData] = useState(false);
 
   useEffect(() => {
-    fetchStaff();
-    fetchActivities();
-  }, [fetchStaff, fetchActivities]);
+    // Real-time listeners for dashboard data
+    const staffQuery = query(collection(db, 'staff'), where('isActive', '==', true));
+    const tasksQuery = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'), limit(10));
+    
+    const unsubscribeStaff = onSnapshot(staffQuery, (snapshot) => {
+      const staffData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        lastActive: doc.data().lastSeenAt?.toDate?.()?.toLocaleString() || 'Never',
+        joinDate: doc.data().createdAt?.toDate?.()?.toLocaleDateString() || 'Unknown',
+        zone: doc.data().zoneId || 'Unassigned',
+        status: doc.data().isActive ? (doc.data().onDuty ? 'active' : 'inactive') : 'inactive'
+      })) as StaffMember[];
+      setStaff(staffData);
+      setHasData(staffData.length > 0);
+    });
+
+    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        title: doc.data().title || 'Untitled Task',
+        description: doc.data().description || '',
+        type: 'task',
+        status: doc.data().status || 'pending',
+        priority: doc.data().priority || 'medium',
+        timestamp: doc.data().createdAt?.toDate?.() || new Date(),
+        time: doc.data().createdAt?.toDate?.()?.toLocaleTimeString() || new Date().toLocaleTimeString()
+      })) as Activity[];
+      setActivities(tasksData);
+      setIsLoading(false);
+    });
+
+    return () => {
+      unsubscribeStaff();
+      unsubscribeTasks();
+    };
+  }, []);
+
+  const handleInitializeData = async () => {
+    setIsLoading(true);
+    const success = await initializeSampleData();
+    if (success) {
+      alert('Sample data initialized successfully!');
+    } else {
+      alert('Failed to initialize sample data');
+    }
+    setIsLoading(false);
+  };
 
   const filteredStaff = staff.filter(member => {
     const searchLower = searchQuery.toLowerCase();
@@ -273,6 +226,16 @@ const Dashboard: React.FC = () => {
         </div>
         
         <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
+          {!hasData && (
+            <button
+              onClick={handleInitializeData}
+              disabled={isLoading}
+              className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+              Initialize Sample Data
+            </button>
+          )}
           <div className="relative flex-grow max-w-md">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <Search className="h-4 w-4 text-gray-400" />
@@ -410,7 +373,7 @@ const Dashboard: React.FC = () => {
                   {filteredStaff.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
-                        No staff members found matching your criteria
+                        {hasData ? 'No staff members found matching your criteria' : 'No data available. Click "Initialize Sample Data" to get started.'}
                       </td>
                     </tr>
                   ) : (

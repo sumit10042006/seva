@@ -177,10 +177,12 @@ const IssuesPage: React.FC = () => {
 
   const handleAssignIssue = async (issueId: string, assignedTo: { type: 'staff' | 'team'; id: string }) => {
     try {
+      const currentUser = getCurrentUser();
       await updateDoc(doc(db, 'issues', issueId), {
         assignedTo,
         status: 'assigned',
-        assignedAt: serverTimestamp()
+        assignedAt: serverTimestamp(),
+        assignedBy: currentUser?.uid || 'unknown'
       });
       alert('Issue assigned successfully!');
     } catch (error) {

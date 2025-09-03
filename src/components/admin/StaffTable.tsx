@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, doc, updateDoc, addDoc, serverTimestamp, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { Edit, Trash2, Bell, History, User, Phone, Mail, Clock, MapPin, Shield } from 'lucide-react';
+import { Edit, Trash2, Bell, History, User, Phone, Mail, Clock, MapPin, Shield, X } from 'lucide-react';
 import { StaffMember, StaffAudit } from '../../types/admin';
 import { getCurrentUser } from '../../firebase/auth';
 
@@ -55,22 +55,6 @@ export const StaffTable: React.FC<StaffTableProps> = ({
 
     return () => unsubscribe();
   }, []);
-
-  const createAuditRecord = async (staffId: string, action: string, changes: Record<string, any>) => {
-    try {
-      const currentUser = getCurrentUser();
-      await addDoc(collection(db, 'staff-audit'), {
-        staffId,
-        action,
-        changes,
-        performedBy: currentUser?.uid || 'unknown',
-        timestamp: serverTimestamp(),
-        ipAddress: 'unknown'
-      });
-    } catch (error) {
-      console.error('Error creating audit record:', error);
-    }
-  };
 
   const handleDeactivate = async (staffMember: StaffMember) => {
     if (!staffMember.id) return;
@@ -143,6 +127,22 @@ export const StaffTable: React.FC<StaffTableProps> = ({
       setSelectedStaffHistory([]);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  const createAuditRecord = async (staffId: string, action: string, changes: Record<string, any>) => {
+    try {
+      const currentUser = getCurrentUser();
+      await addDoc(collection(db, 'staff-audit'), {
+        staffId,
+        action,
+        changes,
+        performedBy: currentUser?.uid || 'unknown',
+        timestamp: serverTimestamp(),
+        ipAddress: 'unknown'
+      });
+    } catch (error) {
+      console.error('Error creating audit record:', error);
     }
   };
 

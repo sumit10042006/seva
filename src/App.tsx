@@ -6,15 +6,28 @@ import StaffManagementPage from './pages/admin/StaffManagementPage';
 import TeamsPage from './pages/admin/TeamsPage';
 import ShiftManagementPage from './pages/admin/ShiftManagementPage';
 import FacilitiesPage from './pages/admin/FacilitiesPage';
-import QRManagerPage from './pages/admin/QRManagerPage';
 import TaskManagementPage from './pages/admin/TaskManagementPage';
 import IssuesPage from './pages/admin/IssuesPage';
 import NotificationsPage from './pages/admin/NotificationsPage';
 import AdsPage from './pages/admin/AdsPage';
 import AnalyticsPage from './pages/admin/AnalyticsPage';
+import { Navbar } from './components/Navbar';
+import { Hero } from './components/Hero';
+import { ProblemsAndSolutions } from './components/ProblemsAndSolutions';
+import { HowItWorks } from './components/HowItWorks';
+import { Features } from './components/Features';
+import { Impact } from './components/Impact';
+import { InteractiveDemo } from './components/InteractiveDemo';
+import { Management } from './components/Management';
+import { Team } from './components/Team';
+import { CTAStrip } from './components/CTAStrip';
+import { Contact } from './components/Contact';
+import { Footer } from './components/Footer';
+import { content } from './data/content';
+import { Language } from './types';
 import './App.css';
 
-const Layout = ({ children }: { children: React.ReactNode }) => {
+const AdminLayout = ({ children }: { children: React.ReactNode }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const location = useLocation();
   
@@ -25,13 +38,13 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
     { path: '/staff', label: 'Staff Management', icon: Users },
     { path: '/teams', label: 'Teams', icon: UserCheck },
     { path: '/shifts', label: 'Shift Management', icon: Calendar },
-    { path: '/facilities', label: 'Facilities', icon: MapPin },
     { path: '/tasks', label: 'Task Management', icon: AlertTriangle },
     { path: '/issues', label: 'Issues & Triage', icon: AlertTriangle },
     { path: '/notifications', label: 'Notifications', icon: Bell },
     { path: '/ads', label: 'Ads & Announcements', icon: Megaphone },
     { path: '/analytics', label: 'Analytics', icon: TrendingUp }
   ];
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
@@ -70,92 +83,118 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
+const LandingPage = () => {
+  const [currentLanguage, setCurrentLanguage] = useState<Language['code']>('en');
+  const currentContent = content[currentLanguage];
+
+  return (
+    <div className="min-h-screen bg-white">
+      <Navbar 
+        content={currentContent} 
+        currentLanguage={currentLanguage} 
+        onLanguageChange={setCurrentLanguage} 
+      />
+      <Hero content={currentContent} />
+      <ProblemsAndSolutions content={currentContent} />
+      <HowItWorks content={currentContent} />
+      <Features content={currentContent} />
+      <Impact content={currentContent} />
+      <InteractiveDemo content={currentContent} />
+      <Management content={currentContent} />
+      <Team content={currentContent} />
+      <CTAStrip content={currentContent} />
+      <Contact content={currentContent} />
+      <Footer content={currentContent} />
+    </div>
+  );
+};
+
 function App() {
   return (
     <Router>
       <Routes>
+        <Route path="/" element={<LandingPage />} />
         <Route
           path="/dashboard"
           element={
-            <Layout>
+            <AdminLayout>
               <Dashboard />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/staff"
           element={
-            <Layout>
+            <AdminLayout>
               <StaffManagementPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/teams"
           element={
-            <Layout>
+            <AdminLayout>
               <TeamsPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/shifts"
           element={
-            <Layout>
+            <AdminLayout>
               <ShiftManagementPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/facilities"
           element={
-            <Layout>
+            <AdminLayout>
               <FacilitiesPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/tasks"
           element={
-            <Layout>
+            <AdminLayout>
               <TaskManagementPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/issues"
           element={
-            <Layout>
+            <AdminLayout>
               <IssuesPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/notifications"
           element={
-            <Layout>
+            <AdminLayout>
               <NotificationsPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/ads"
           element={
-            <Layout>
+            <AdminLayout>
               <AdsPage />
-            </Layout>
+            </AdminLayout>
           }
         />
         <Route
           path="/analytics"
           element={
-            <Layout>
+            <AdminLayout>
               <AnalyticsPage />
-            </Layout>
+            </AdminLayout>
           }
         />
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>
   );

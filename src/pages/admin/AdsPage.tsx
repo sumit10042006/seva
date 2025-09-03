@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { Plus, Megaphone, Calendar, MapPin, User, Eye, Edit, Trash2 } from 'lucide-react';
+import { Plus, Megaphone, Calendar, MapPin, User, Eye, Edit, Trash2, X, AlertTriangle } from 'lucide-react';
 import { Ad } from '../../types/admin';
 import { getCurrentUser } from '../../firebase/auth';
 

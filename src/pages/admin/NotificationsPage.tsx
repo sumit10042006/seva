@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { collection, getDocs, addDoc, serverTimestamp, query, orderBy } from 'firebase/firestore';
 import { db } from '../../firebase/config';
-import { Send, MessageSquare, Mail, Phone, Users, User, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { Send, MessageSquare, Mail, Phone, Users, User, Clock, CheckCircle, XCircle, X } from 'lucide-react';
 import { Notification, StaffMember, Team } from '../../types/admin';
+import { getCurrentUser } from '../../firebase/auth';
 
 const NotificationsPage: React.FC = () => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -61,6 +62,7 @@ const NotificationsPage: React.FC = () => {
     }
 
     try {
+      const currentUser = getCurrentUser();
       let recipients: string[] = [];
 
       if (recipientType === 'individual') {
@@ -89,11 +91,12 @@ const NotificationsPage: React.FC = () => {
         message: newNotification.message,
         templateId: newNotification.templateId,
         status: 'pending',
-        createdAt: serverTimestamp()
+        createdAt: serverTimestamp(),
+        createdBy: currentUser?.uid || 'unknown'
       };
 
       if (newNotification.scheduledFor) {
-        notificationData.scheduledFor = new Date(newNotification.scheduledFor);
+        (notificationData as any).scheduledFor = new Date(newNotification.scheduledFor);
       }
 
       await addDoc(collection(db, 'notifications'), notificationData);

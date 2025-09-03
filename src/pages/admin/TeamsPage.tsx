@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, addDoc, serverTimestamp, doc, updateDoc, onSnapshot, query, orderBy, where } from 'firebase/firestore';
 import { db } from '../../firebase/config';
 import { Plus, Users, MapPin, Bell, User, Clock, AlertTriangle, X, Edit, Trash2 } from 'lucide-react';
 import { Team, StaffMember, Task } from '../../types/admin';
@@ -27,7 +27,7 @@ const TeamsPage: React.FC = () => {
   useEffect(() => {
     // Real-time listeners
     const teamsQuery = query(collection(db, 'teams'), orderBy('createdAt', 'desc'));
-    const staffQuery = query(collection(db, 'staff'), orderBy('name'));
+    const staffQuery = query(collection(db, 'staff'), where('isActive', '==', true), orderBy('name'));
     const tasksQuery = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
 
     const unsubscribeTeams = onSnapshot(teamsQuery, (snapshot) => {
@@ -184,7 +184,7 @@ const TeamsPage: React.FC = () => {
 
       // Update staff member's team assignment
       await updateDoc(doc(db, 'staff', staffId), {
-        teamIds: [teamId], // For simplicity, assign to one team
+        teamIds: [teamId],
         updatedAt: serverTimestamp()
       });
 
